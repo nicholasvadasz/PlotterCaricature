@@ -1,0 +1,9 @@
+numpy==2.4.3
+scipy==1.18.1
+Pillow==12.3.0
+ortools==9.15.6755
+svgpathtools==1.7.2
+vtracer==1.0.0a4
+scikit-image==0.26.0
+vpype==1.15.0
+networkx==3.6.1

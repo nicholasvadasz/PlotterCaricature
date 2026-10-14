@@ -1,0 +1,30 @@
+// Local only. Reuses a Gemini CLI output directory; never calls the image API.
+import {readFile,mkdir,writeFile,copyFile} from 'node:fs/promises';
+import {existsSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import path from 'node:path';
+import {svgFor} from '../src/geometry.js';
+import {zipSync,strToU8} from 'fflate';
+const [input,output]=process.argv.slice(2);
+if(!input||!output)throw new Error('Usage: node scripts/trace-saved-gemini.mjs input-directory output-directory');
+const python=process.env.PLOTTER_PYTHON||(process.platform==='win32'?'.venv/Scripts/python.exe':'.venv/bin/python');
+const original=['png','jpg','webp'].map(ext=>path.join(input,`line-art.${ext}`)).find(existsSync);
+if(!original)throw new Error('No saved generated image found.');
+await mkdir(output,{recursive:true});
+const png=path.join(output,'line-art.png');
+const conversion=spawnSync(python,['-c','from PIL import Image;import sys;Image.open(sys.argv[1]).convert("RGB").save(sys.argv[2])',original,png],{windowsHide:true,encoding:'utf8'});
+if(conversion.status!==0)throw new Error(conversion.stderr);
+const data=await readFile(png),generation=JSON.parse(await readFile(path.join(input,'generation.json'),'utf8'));
+const settings={engine:'lineart',width:720,height:720,resolution:720,paperWidth:180,penWidth:.25,traceThreshold:.65,traceMinLength:.35,traceSmooth:.6,traceMergeGap:1.5,traceSimplify:.05,traceStrokeTarget:12};
+const result=spawnSync(python,['-u','backend/portrait.py'],{input:JSON.stringify({...settings,image:'data:image/png;base64,'+data.toString('base64')}),encoding:'utf8',windowsHide:true,maxBuffer:32*1024*1024});
+if(result.status!==0)throw new Error(result.stderr||result.stdout);
+const messages=result.stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
+const studies=messages.find(m=>m.results)?.results;if(!studies)throw new Error('No trace results.');
+const reference=['reference.png','masked-reference.png','masked-input.png'].map(name=>path.join(input,name)).find(existsSync);
+const files={'line-art.png':data,'generation.json':strToU8(JSON.stringify(generation,null,2)),'reference.png':await readFile(reference)};
+const stats=[];
+for(const study of studies){const svg=svgFor(study,720,720,180,.25);files[`${study.id}.svg`]=strToU8(svg.svg);stats.push({id:study.id,strokes:svg.strokes,lengthMm:svg.lengthMm,vertices:svg.vertices,optimization:study.optimization,routing:study.routing});}
+files['settings.json']=strToU8(JSON.stringify({...settings,generation,studies:stats},null,2));
+for(const [name,bytes]of Object.entries(files))await writeFile(path.join(output,name),bytes);
+await writeFile(path.join(output,'studies.zip'),zipSync(files));
+console.log(JSON.stringify({output,studies:stats},null,2));
