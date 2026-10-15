@@ -5,6 +5,7 @@ created. A stroke budget allows several trails through large connected regions,
 reducing retracing compared to forcing every region into one trail.
 """
 import networkx as nx
+import heapq
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -63,6 +64,83 @@ def bridge_ink_regions(branches, mm_per_unit, gap_mm=.75, budget_mm=5):
     return split+bridges,bridges,report
 
 
+def nearby_pairing(g, odd):
+    """Bounded nearest-neighbor search over actual ink distances, cached per region."""
+    if 'nearby_pairing' in g.graph:return g.graph['nearby_pairing']
+    endpoints=set(odd);candidates={}
+    for source in odd:
+        queue=[(0,source)];best={source:0};visited=set();found=0
+        while queue and found<8:
+            distance,node=heapq.heappop(queue)
+            if node in visited:continue
+            visited.add(node)
+            if node!=source and node in endpoints:
+                a,b=sorted((source,node));candidates[a,b]=distance;found+=1
+            for neighbor,edges in g[node].items():
+                d=distance+min(edge['weight'] for edge in edges.values())
+                if d<best.get(neighbor,float('inf')):
+                    best[neighbor]=d;heapq.heappush(queue,(d,neighbor))
+    unmatched=set(odd);pairs=[]
+    for (a,b),distance in sorted(candidates.items(),key=lambda item:(item[1],item[0])):
+        if a in unmatched and b in unmatched:
+            unmatched.remove(a);unmatched.remove(b);pairs.append((distance,a,b))
+    while unmatched:
+        a=min(unmatched);unmatched.remove(a)
+        distances=nx.single_source_dijkstra_path_length(g,a)
+        b=min(unmatched,key=lambda n:(distances[n],n));unmatched.remove(b)
+        pairs.append((distances[b],a,b))
+    g.graph['nearby_pairing']=sorted(pairs,reverse=True)
+    return g.graph['nearby_pairing']
+
+
+def retrace_plan(g, odd, trails):
+    """Choose trail ends jointly with the shortest-path pairing.
+
+    Dummy vertices consume exactly 2*trails odd endpoints. Minimum-weight
+    perfect matching pairs the rest along existing ink, without fixing terminal
+    choices prematurely. Bound cubic matching work on textured images.
+    """
+    if len(odd)<=2*trails:return dict(pairs=[],terminals=odd,cost=0,method='none')
+    if len(odd)<=80 and len(g)<=6000:
+        metric=nx.Graph()
+        for i,a in enumerate(odd):
+            distances=nx.single_source_dijkstra_path_length(g,a)
+            for b in odd[i+1:]:metric.add_edge(a,b,weight=distances[b])
+        for i in range(2*trails):
+            for a in odd:metric.add_edge(('terminal',i),a,weight=0)
+        matching=nx.min_weight_matching(metric,weight='weight')
+        terminals=[];pairs=[];cost=0
+        for a,b in matching:
+            if a[0]=='terminal':terminals.append(b)
+            elif b[0]=='terminal':terminals.append(a)
+            else:pairs.append((a,b));cost+=metric[a][b]['weight']
+        return dict(pairs=sorted(tuple(sorted(pair)) for pair in pairs),terminals=sorted(terminals),cost=cost,method='minimum-weight-matching')
+    if len(odd)>1200 or len(g)>6000:
+        # Preserve every branch exactly once instead of doubling all the ink.
+        return dict(pairs=[],terminals=odd,cost=0,method='no-retrace-fallback')
+    distances=nx.single_source_dijkstra_path_length(g,odd[0])
+    terminals={max(odd,key=lambda n:(distances[n],n))}
+    nearest={n:float('inf') for n in odd};latest=next(iter(terminals))
+    while len(terminals)<2*trails:
+        distances=nx.single_source_dijkstra_path_length(g,latest)
+        for n in odd:nearest[n]=min(nearest[n],distances[n])
+        latest=max((n for n in odd if n not in terminals),key=lambda n:(nearest[n],n))
+        terminals.add(latest)
+    unmatched=set(odd)-terminals;pairs=[];cost=0
+    while unmatched:
+        a=min(unmatched);unmatched.remove(a)
+        distances=nx.single_source_dijkstra_path_length(g,a)
+        b=min(unmatched,key=lambda n:(distances[n],n));unmatched.remove(b)
+        pairs.append((a,b));cost+=distances[b]
+    # Another candidate starts with the cheapest local pairings and turns the
+    # most expensive pairs into free trail ends. Keep whichever plan uses less ink.
+    nearby=nearby_pairing(g,odd);kept=nearby[trails:]
+    if sum(d for d,_,_ in kept)<cost:
+        pairs=[(a,b) for _,a,b in kept];cost=sum(d for d,_,_ in kept)
+        terminals=[n for _,a,b in nearby[:trails] for n in (a,b)]
+    return dict(pairs=pairs,terminals=sorted(terminals),cost=cost,method='bounded-heuristic')
+
+
 def route_ink(branches, mm_per_unit, target=12, minimum_mm=.35):
     graph=nx.MultiGraph()
     for path in branches:
@@ -77,45 +155,41 @@ def route_ink(branches, mm_per_unit, target=12, minimum_mm=.35):
         if ink*mm_per_unit<minimum_mm:
             removed+=ink;continue
         odd=sorted(n for n,degree in g.degree if degree%2)
-        components.append(dict(graph=g,odd=odd,trails=1,ink=ink))
+        trails=max(1,len(odd)//2) if target is None else 1
+        components.append(dict(graph=g,odd=odd,trails=trails,ink=ink,plans={}))
     # More disconnected regions than the target remain separate. Do not discard
     # identity-bearing contours or cross blank paper to claim an arbitrary count.
-    remaining=max(0,target-len(components))
+    def plan(c,k):
+        if k not in c['plans']:c['plans'][k]=retrace_plan(c['graph'],c['odd'],k)
+        return c['plans'][k]
+    remaining=max(0,target-len(components)) if target is not None else 0
     while remaining:
-        candidates=[c for c in components if c['trails']<len(c['odd'])//2]
+        candidates=[c for c in components if c['trails']<len(c['odd'])//2 and plan(c,c['trails'])['cost']>0]
         if not candidates:break
-        c=max(candidates,key=lambda c:len(c['odd'])/c['trails'])
+        # Spend a lift where it saves the most real pen-down distance.
+        c=max(candidates,key=lambda c:plan(c,c['trails'])['cost']-plan(c,c['trails']+1)['cost'])
         c['trails']+=1;remaining-=1
-    paths=[];retrace=0;fallback=False
+    if target is not None and components:
+        # Keep the previous allocation as a candidate: marginal heuristics can
+        # miss later savings when large regions use approximate matching.
+        previous=[1]*len(components)
+        for _ in range(max(0,target-len(components))):
+            eligible=[i for i,c in enumerate(components) if previous[i]<len(c['odd'])//2]
+            if not eligible:break
+            i=max(eligible,key=lambda i:len(components[i]['odd'])/previous[i]);previous[i]+=1
+        if sum(plan(c,k)['cost'] for c,k in zip(components,previous))<sum(plan(c,c['trails'])['cost'] for c in components):
+            for c,k in zip(components,previous):c['trails']=k
+    paths=[];retrace=0;fallback=False;methods=set()
     for component in components:
         g=component['graph'];odd=component['odd'];trails=component['trails']
-        if len(odd)>1200 or len(g)>6000:
-            # Bounded fallback for pathological texture: double existing edges.
-            # This uses more ink but never invents a connector or drops branches.
-            for a,b,e in list(g.edges(data=True)):
-                g.add_edge(a,b,**e);retrace+=e['weight']
-            odd=[];fallback=True
-        elif len(odd)>2*trails:
-            # Keep well-separated odd endpoints as trail terminals. Pair all
-            # others greedily by shortest distance along actual ink geometry.
-            distances=nx.single_source_dijkstra_path_length(g,odd[0])
-            terminals={max(odd,key=lambda n:(distances[n],n))}
-            nearest={n:float('inf') for n in odd}
-            latest=next(iter(terminals))
-            while len(terminals)<2*trails:
-                distances=nx.single_source_dijkstra_path_length(g,latest)
-                for n in odd:nearest[n]=min(nearest[n],distances[n])
-                latest=max((n for n in odd if n not in terminals),key=lambda n:(nearest[n],n))
-                terminals.add(latest)
-            unmatched=set(odd)-terminals
-            while unmatched:
-                a=min(unmatched);unmatched.remove(a)
-                distances,routes=nx.single_source_dijkstra(g,a)
-                b=min(unmatched,key=lambda n:(distances[n],n));unmatched.remove(b)
-                for u,v in zip(routes[b][:-1],routes[b][1:]):
-                    edge=min(g[u][v].values(),key=lambda e:e['weight'])
-                    g.add_edge(u,v,**edge);retrace+=edge['weight']
-            odd=sorted(terminals)
+        selected=plan(component,trails);methods.add(selected['method'])
+        fallback|=selected['method'] in ('bounded-heuristic','no-retrace-fallback')
+        for a,b in selected['pairs']:
+            route=nx.shortest_path(g,a,b,weight='weight')
+            for u,v in zip(route[:-1],route[1:]):
+                edge=min(g[u][v].values(),key=lambda e:e['weight'])
+                g.add_edge(u,v,**edge);retrace+=edge['weight']
+        odd=selected['terminals']
         # A temporary hub turns remaining odd endpoints into an Euler circuit.
         # Removing the hub's virtual edges yields actual continuous pen trails.
         hub='pen lifts'
@@ -134,4 +208,4 @@ def route_ink(branches, mm_per_unit, target=12, minimum_mm=.35):
     return dict(paths=paths,routing=dict(targetStrokes=target,connectedRegions=len(components),
         strokes=len(paths),originalInkMm=round(sum(c['ink'] for c in components)*mm_per_unit,4),
         retracedMm=round(retrace*mm_per_unit,4),removedTinyComponentMm=round(removed*mm_per_unit,4),
-        connectorMm=0,fallback=fallback,targetMet=len(paths)<=target))
+        connectorMm=0,fallback=fallback,matchingMethods=sorted(methods),targetMet=target is None or len(paths)<=target))

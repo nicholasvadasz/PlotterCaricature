@@ -3,7 +3,8 @@ const message=document.getElementById('message');
 try{
  const input=JSON.parse(decodeURIComponent(location.hash.slice(1)));
  history.replaceState(null,'',location.pathname);
- const result=await openInInkscape(input.svg,input.name,input.penWidthMm);
+ const result=await openInInkscape(input.svg,input.name,input.penWidthMm,input.context);
  message.textContent='Opened in Inkscape on a 5 × 7 inch page. You can close this tab.';
  document.getElementById('savedPath').textContent=result.file;
+ if(result.telemetryWarning)message.textContent+=' '+result.telemetryWarning;
 }catch(error){message.textContent=error.message||'Unable to open this drawing.';message.className='error';}

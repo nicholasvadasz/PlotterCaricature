@@ -3,6 +3,7 @@ import {mkdir,writeFile} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
+import {activityContext,tryRecordActivity} from './telemetry.mjs';
 
 const escape=value=>String(value).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 export function pageForInkscape({svg,penWidthMm=.45,name='Portrait'}){
@@ -36,12 +37,24 @@ export function findInkscape(){
  if(process.platform!=='win32')return 'inkscape';
  throw new Error('Inkscape was not found. Set INKSCAPE_PATH to its executable and restart the local app.');
 }
-export async function openInInkscape(input,root,{executable=findInkscape(),launch=spawn}={}){
+export async function openInInkscape(input,root,{executable,launch=spawn}={}){
  const svg=pageForInkscape(input),folder=path.join(root,'.private','inkscape');
  await mkdir(folder,{recursive:true});
  const name=String(input.name||'portrait').replace(/[^a-z0-9_-]+/gi,'-').slice(0,70)||'portrait';
- const file=path.join(folder,`${name}-5x7-${randomUUID()}.svg`);
+ const id=randomUUID(),created=new Date().toISOString();
+ const file=path.join(folder,`${created.replace(/[:.]/g,'-')}-${name}-5x7-${id}.svg`);
  await writeFile(file,svg,'utf8');
+ const context=activityContext({...input.context,drawingName:input.context?.drawingName||input.name||'Portrait'}),metadataFile=file.replace(/\.svg$/,'.json');
+ const metadata={id,created,file,context,name:String(input.name||'Portrait').slice(0,160),penWidthMm:input.penWidthMm??.45,pageWidthIn:5,pageHeightIn:7,marginIn:.25};
+ let telemetryWarning;
+ const save=async status=>{
+  try{await writeFile(metadataFile,JSON.stringify({...metadata,status,updated:new Date().toISOString()},null,2));}
+  catch{telemetryWarning='Inkscape SVG saved, but its activity sidecar could not be written.';}
+  telemetryWarning=await tryRecordActivity(root,status,{openId:id,file,context})||telemetryWarning;
+ };
+ await save('inkscape_open_requested');
+ try{
+ executable??=findInkscape();
  await new Promise((resolve,reject)=>{
   const child=launch(executable,['--with-gui',file],{shell:false,windowsHide:true,detached:true,stdio:'ignore'});
   let timer;
@@ -49,7 +62,9 @@ export async function openInInkscape(input,root,{executable=findInkscape(),launc
   child.once('spawn',()=>{timer=setTimeout(()=>{child.unref();resolve();},700);});
   child.once('exit',code=>{clearTimeout(timer);if(code===0)resolve();else reject(new Error(`Inkscape exited with code ${code}. The SVG was saved at ${file}`));});
  });
- return {file,pageWidthIn:5,pageHeightIn:7,marginIn:.25};
+ }catch(error){await save('inkscape_open_failed');throw new Error(`${error.message} Saved SVG: ${file}${telemetryWarning?'. '+telemetryWarning:''}`);}
+ await save('inkscape_opened');
+ return {file,metadataFile,openId:id,created,pageWidthIn:5,pageHeightIn:7,marginIn:.25,telemetryWarning};
 }
 export function inkscapeApi(root){
  return async(req,res)=>{

@@ -13,7 +13,7 @@ def request(draw):
 class LinePathTests(unittest.TestCase):
     def test_thick_stroke_becomes_one_centerline_and_not_two_outlines(self):
         result=line_studies(request(lambda d:d.line((20,64,108,64),fill='black',width=7)),lambda **e:None)
-        self.assertEqual(len(result),11)
+        self.assertEqual(len(result),12)
         for study in result:
             self.assertEqual(study['plotterOptimization']['mergeGapMm'],1)
             self.assertEqual(study['plotterOptimization']['after']['strokes'],len(study['paths']))

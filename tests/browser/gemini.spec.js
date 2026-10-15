@@ -6,6 +6,9 @@ import {PROMPT_PRESETS,PROD_PROMPT_PRESETS,SWATCH_STYLE} from '../../src/prompt-
 const reference='examples/gemini-v13/masked-reference.png';
 const ink='examples/gemini-v13/line-art.png';
 
+// Browser fixtures must not pollute the user's saved activity history.
+test.beforeEach(async({page})=>{await page.route('**/api/telemetry/events',route=>route.fulfill({json:{id:'fixture-activity'}}));});
+
 test('Gemini-only UI uploads, generates, and exports local pen studies',async({page})=>{
   await page.goto('/');
   let calls=0;
@@ -31,7 +34,7 @@ test('Gemini-only UI uploads, generates, and exports local pen studies',async({p
   await expect(page.locator('#status')).toContainText('studies ready',{timeout:120000});
   expect(calls).toBe(1);
   expect(models.some(url=>url.includes('segmenter'))).toBe(false);
-  expect(await page.locator('#gallery .card').count()).toBe(11);
+  expect(await page.locator('#gallery .card').count()).toBe(12);
   expect(await page.locator('#gallery .card').filter({hasText:'Minimum lifts: existing ink'}).count()).toBe(1);
   const waiting=page.waitForEvent('download');
   await page.locator('#downloadAll').click();
@@ -117,7 +120,7 @@ test('All Prompts generates concurrently, traces concurrently, archives and retr
   await expect(page.locator('#status')).toContainText(`${PROMPT_PRESETS.length}/${PROMPT_PRESETS.length} ready`,{timeout:120000});
   expect(styles.sort()).toEqual(PROMPT_PRESETS.map(p=>p.id).sort());expect(calls).toBe(PROMPT_PRESETS.length);expect(peakTracing).toBeGreaterThan(1);
   await expect(page.locator('#gallery .card:visible')).toHaveCount(PROMPT_PRESETS.length);
-  expect(await page.locator('#gallery .card').count()).toBe(PROMPT_PRESETS.length*11);
+  expect(await page.locator('#gallery .card').count()).toBe(PROMPT_PRESETS.length*12);
   await expect(page.locator('#geminiReview')).toHaveCount(0);
   await expect(page.getByRole('button',{name:'Review PNG + prompt'})).toHaveCount(0);
   expect(styles).not.toContain('sparse-observation');
@@ -188,7 +191,7 @@ test('overlapping local trace batches queue instead of dropping SVG extraction',
   expect(response.status()).toBe(200);
   return (await response.text()).trim().split('\n').map(line=>JSON.parse(line));
  }));
- expect(results.every(events=>events.some(e=>e.results?.length===11)&&!events.some(e=>e.error))).toBe(true);
+ expect(results.every(events=>events.some(e=>e.results?.length===12)&&!events.some(e=>e.error))).toBe(true);
  expect(results.some(events=>events.some(e=>e.progress?.includes('Waiting for a local tracing worker')))).toBe(true);
 });
 
@@ -201,27 +204,28 @@ test('live Gemini color crop and exported pen paths',async({page})=>{
   await expect(page.locator('#status')).toContainText('studies ready',{timeout:270000});
 });
 
-test('Prod Pen Treatment runs only A F B C G H concurrently and retains that display order',async({page})=>{
+test('Prod Pen Treatment runs only B C G H concurrently and retains that display order',async({page})=>{
  const image=await batchPhoto(page),pending=[],styles=[];
  await page.route('**/api/gemini/generate',async route=>{
   const body=route.request().postDataJSON();styles.push(body.style);pending.push({route,body});
-  if(pending.length===6)await Promise.all(pending.map(({route,body})=>route.fulfill({json:{image,model:body.model,style:body.style,prompt:body.style}})));
+  if(pending.length===4)await Promise.all(pending.map(({route,body})=>route.fulfill({json:{image,model:body.model,style:body.style,prompt:body.style}})));
  });
  await page.locator('#prodPen').click();
- await expect(page.locator('#status')).toContainText('Prod Pen Treatment: 6/6 ready',{timeout:120000});
- expect(styles).toEqual(PROD_PROMPT_PRESETS.map(p=>p.id));
+ await expect(page.locator('#status')).toContainText('Prod Pen Treatment: 4/4 ready',{timeout:120000});
+ expect(styles).toEqual(['sparse-hair','sparse-face','sparse-pen-routes','sparse-connected']);
  expect(await page.locator('.prompt-result').evaluateAll(nodes=>nodes.map(n=>n.dataset.prompt))).toEqual(styles);
- await expect(page.locator('#gallery .card:visible')).toHaveCount(6);
+ await expect(page.locator('#gallery .card:visible')).toHaveCount(4);
  await expect(page.locator('#prodSwatch')).toBeEnabled();
  await expect(page.locator('#swatchReview')).toBeHidden();
  const waiting=page.waitForEvent('download');await page.locator('#downloadAll').click();
  const download=await waiting;expect(download.suggestedFilename()).toBe('prod-pen-treatment.zip');
  const files=unzipSync(await readFile(await download.path()));
- expect(JSON.parse(strFromU8(files['batch-info.json'])).geminiRequestsRequested).toBe(6);
+ expect(JSON.parse(strFromU8(files['batch-info.json'])).geminiRequestsRequested).toBe(4);
 });
 
 test('Prod Swatch makes one request, crops six different panels, optimizes, archives and retraces locally',async({page})=>{
  await batchPhoto(page);let calls=0;
+ await page.locator('#promptMode').selectOption('line-minimization');
  const sheet=await page.evaluate(()=>{
   const c=document.createElement('canvas');c.width=960;c.height=640;const ctx=c.getContext('2d');
   ctx.fillStyle='white';ctx.fillRect(0,0,c.width,c.height);ctx.strokeStyle='black';ctx.lineWidth=3;
@@ -233,8 +237,8 @@ test('Prod Swatch makes one request, crops six different panels, optimizes, arch
   return c.toDataURL();
  });
  await page.route('**/api/gemini/generate',route=>{
-  calls++;const body=route.request().postDataJSON();expect(body.style).toBe(SWATCH_STYLE);
-  return route.fulfill({json:{image:sheet,style:SWATCH_STYLE,model:body.model,prompt:'Six fixture prompts'}});
+  calls++;const body=route.request().postDataJSON();expect(body.style).toBe(SWATCH_STYLE);expect(body.promptMode).toBe('line-minimization');
+  return route.fulfill({json:{image:sheet,style:SWATCH_STYLE,model:body.model,prompt:'Six fixture prompts',promptMode:body.promptMode,promptVersion:'line-minimization-v1'}});
  });
  await page.locator('#prodSwatch').click();
  await expect(page.locator('#status')).toContainText('Prod Swatch Experiment: 6/6 ready',{timeout:120000});
@@ -247,6 +251,7 @@ test('Prod Swatch makes one request, crops six different panels, optimizes, arch
  expect(JSON.parse(strFromU8(files['batch-info.json'])).geminiRequestsRequested).toBe(1);
  for(const [index,p] of PROD_PROMPT_PRESETS.entries()){
   const generation=JSON.parse(strFromU8(files[p.id+'/generation.json']));
+  expect(generation.promptMode).toBe('line-minimization');expect(generation.promptVersion).toBe('line-minimization-v1');
   expect(generation.swatchPanel.index).toBe(index);expect(generation.style).toBe(p.id);
   expect(generation.rasterWidth).toBe(320);expect(generation.rasterHeight).toBe(320);
   const studies=JSON.parse(strFromU8(files[p.id+'/settings.json'])).studies;
@@ -257,9 +262,14 @@ test('Prod Swatch makes one request, crops six different panels, optimizes, arch
   },{url:'data:image/png;base64,'+Buffer.from(files[p.id+'/line-art.png']).toString('base64'),index});
   expect(pixel).toEqual([0,0,0,255]);
  }
+ await page.locator('#promptMode').selectOption('fidelity');
  await page.locator('#retraceGemini').click();
  await expect(page.locator('#prodSwatch')).toBeEnabled({timeout:120000});
  await expect(page.locator('#status')).toContainText('6/6 ready');expect(calls).toBe(1);
+ const retracedDownload=page.waitForEvent('download');await page.locator('#downloadAll').click();
+ const retracedFiles=unzipSync(await readFile(await (await retracedDownload).path()));
+ expect(JSON.parse(strFromU8(retracedFiles['swatch-generation.json'])).promptMode).toBe('line-minimization');
+ for(const p of PROD_PROMPT_PRESETS)expect(JSON.parse(strFromU8(retracedFiles[p.id+'/generation.json'])).promptMode).toBe('line-minimization');
 });
 
 test('wrong swatch aspect ratio retains the sheet and makes no tracing requests',async({page})=>{
@@ -274,4 +284,58 @@ test('wrong swatch aspect ratio retains the sheet and makes no tracing requests'
  const waiting=page.waitForEvent('download');await page.locator('#downloadAll').click();
  const files=unzipSync(await readFile(await (await waiting).path()));expect(files['swatch.png']).toBeTruthy();
  expect(JSON.parse(strFromU8(files['batch.json'])).every(j=>j.state==='error')).toBe(true);
+});
+
+test('MAI selection generates, retraces without another request, and hands provenance to Inkscape and activity',async({page})=>{
+ const events=[];
+ await page.route('**/api/mai/health',route=>route.fulfill({json:{configured:true,models:['microsoft/mai-image-2.6']}}));
+ await page.route('**/api/telemetry/events',route=>{events.push(route.request().postDataJSON());return route.fulfill({json:{id:'event'}});});
+ const image=await batchPhoto(page);let calls=0,opened;
+ await page.route('**/api/mai/generate',route=>{
+  calls++;const body=route.request().postDataJSON();expect(body.provider).toBe('mai');expect(body.model).toBe('microsoft/mai-image-2.6');
+  return route.fulfill({json:{image,provider:'mai',id:'mai-generation',model:body.model,style:body.style,prompt:'Fixture'}});
+ });
+ await page.route('**/api/inkscape/open',route=>{opened=route.request().postDataJSON();return route.fulfill({json:{file:'fixture.svg'}});});
+ await page.locator('#imageProvider').selectOption('mai');
+ await expect(page.locator('#geminiStatus')).toContainText('configured');
+ await page.locator('#generate').click();
+ await expect(page.locator('#status')).toContainText('studies ready');
+ await page.getByRole('radio',{name:'Min overwrite',exact:true}).check();
+ await expect(page.locator('#gallery .card:visible')).toHaveCount(1);
+  await expect(page.locator('#gallery .card:visible')).toContainText('Selected minimum overwrite');
+ await page.locator('#gallery .card:visible').getByRole('button',{name:'Open in Inkscape'}).click();
+ await expect(page.locator('#status')).toContainText('Opened in Inkscape');
+ expect(opened.context).toMatchObject({generationId:'mai-generation',provider:'mai',model:'microsoft/mai-image-2.6',routePreference:'overdraw',retracedMm:0});
+ expect(opened.context.drawingId).toBeTruthy();
+ expect(opened.context.settings.resolution).toBe(720);
+ await page.locator('#imageProvider').selectOption('gemini');
+ await page.locator('#retraceGemini').click();await expect(page.locator('#status')).toContainText('studies ready');
+ expect(calls).toBe(1);
+ await expect.poll(()=>events.filter(e=>e.event==='trace_completed').length).toBe(2);
+ expect(events.filter(e=>e.event==='trace_completed').every(e=>e.context.provider==='mai')).toBe(true);
+ expect(events.some(e=>e.event==='route_preference_selected'&&e.context.routePreference==='overdraw')).toBe(true);
+ await page.route('**/api/telemetry/export',route=>route.fulfill({body:'{"event":"inkscape_opened"}\n',contentType:'application/x-ndjson'}));
+ const waiting=page.waitForEvent('download');await page.locator('#downloadActivity').click();
+ expect((await waiting).suggestedFilename()).toBe('plotter-activity.jsonl');
+});
+
+// Exercise every generation entry point without paid API calls or Python tracing.
+test('Prompt mode defaults to line minimization and follows single, production and all-prompt requests',async({page})=>{
+ const image=await batchPhoto(page),requests=[];
+ await expect(page.locator('#promptMode')).toHaveValue('line-minimization');
+ await page.route('**/api/portrait',route=>route.fulfill({status:500,json:{error:'Fixture tracing stopped'}}));
+ await page.route('**/api/gemini/generate',async route=>{
+  const body=route.request().postDataJSON();requests.push(body);
+  await expect(page.locator('#promptMode')).toBeDisabled();
+  await route.fulfill({json:{image,model:body.model,style:body.style,promptMode:body.promptMode,prompt:'Fixture'}});
+ });
+ for(const mode of ['fidelity','line-minimization']){
+  await page.locator('#promptMode').selectOption(mode);
+  for(const [button,count] of [['generate',1],['prodPen',4],['allPrompts',9]]){
+   const before=requests.length;await page.locator('#'+button).click();
+   await expect(page.locator('#promptMode')).toBeEnabled();
+   expect(requests.length-before).toBe(count);
+   expect(requests.slice(before).every(r=>r.promptMode===mode)).toBe(true);
+  }
+ }
 });

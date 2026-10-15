@@ -4,12 +4,16 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {geminiApi} from './gemini.mjs';
 import {inkscapeApi} from './inkscape.mjs';
+import {generateMai,maiConfig,MAI_MODELS} from './mai.mjs';
+import {telemetryApi} from './telemetry.mjs';
 import {PROMPT_PRESETS} from '../src/prompt-presets.js';
 import {JobPool} from './job-pool.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const python=process.env.PLOTTER_PYTHON||path.join(root,'.venv',process.platform==='win32'?'Scripts/python.exe':'bin/python');
 export function portraitBackend(){
   const gemini=geminiApi(root);
+  const mai=geminiApi(root,{provider:'mai',models:MAI_MODELS,generate:generateMai,readConfig:maiConfig});
+  const telemetry=telemetryApi(root);
   const inkscape=inkscapeApi(root);
   const active=new Set();
   const pool=new JobPool(PROMPT_PRESETS.length);
@@ -29,6 +33,8 @@ export function portraitBackend(){
     let pathname;try{pathname=decodeURIComponent((req.url||'').split('?')[0]).replaceAll('\\','/');}catch{res.writeHead(400);res.end();return;}
     if(pathname.split('/').some(p=>p==='.private'||p==='.env'||p.startsWith('.env.'))){res.writeHead(403);res.end('Private server file');return;}
     if(req.url?.startsWith('/api/gemini'))return gemini(req,res,next);
+    if(req.url?.startsWith('/api/mai'))return mai(req,res,next);
+    if(req.url?.startsWith('/api/telemetry'))return telemetry(req,res);
     if(req.url?.startsWith('/api/inkscape'))return inkscape(req,res);
     if(!req.url?.startsWith('/api/portrait'))return next();
     const fail=(status,error)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify({error}));};

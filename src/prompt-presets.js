@@ -12,8 +12,11 @@ export const PROMPT_PRESETS = [
   {id:'sparse-economical',label:'I · Economical open contours'}
 ];
 
-// Production order is intentional; reuse the same prompt IDs and exact text.
+// Production order is intentional; individual and production requests share
+// the current backend prompt builder, including the common fidelity rules.
 export const PROD_PROMPT_PRESETS = ['sparse-five','sparse-identity','sparse-hair',
   'sparse-face','sparse-pen-routes','sparse-connected'].map(id=>PROMPT_PRESETS.find(p=>p.id===id));
+// The separate-image production batch excludes A and F; the archived swatch keeps six panels.
+export const PROD_PEN_PROMPT_PRESETS = PROD_PROMPT_PRESETS.filter(p=>!['sparse-five','sparse-identity'].includes(p.id));
 export const SWATCH_STYLE = 'prod-swatch';
 export const SWATCH_LAYOUT = {columns:3,rows:2,aspectRatio:'3:2'};

@@ -7,8 +7,9 @@ export async function asPng(dataUrl){
  return {image:canvas.toDataURL('image/png'),rasterWidth:canvas.width,rasterHeight:canvas.height};
 }
 export async function requestGemini(input,signal){
- const r=await fetch('/api/gemini/generate',{method:'POST',headers:{'Content-Type':'application/json'},signal,body:JSON.stringify(input)});
- const result=await r.json();if(!r.ok)throw new Error(result.error||'Gemini request failed.');
+ const provider=input.provider==='mai'?'mai':'gemini';
+ const r=await fetch(`/api/${provider}/generate`,{method:'POST',headers:{'Content-Type':'application/json'},signal,body:JSON.stringify(input)});
+ const result=await r.json();if(!r.ok)throw new Error(result.error||'Image request failed.');
  return {...result,...await asPng(result.image),sourceImage:input.image};
 }
 export function traceLineart(raster,settings,signal,progress){

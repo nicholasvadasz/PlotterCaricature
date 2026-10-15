@@ -29,12 +29,23 @@ test('only finite line geometry is reconstructed; active SVG content cannot reac
 test('opening writes a separate 5x7 file and invokes Inkscape without a shell',async()=>{
  const root=await mkdtemp(path.join(tmpdir(),'plotter-inkscape-'));let invoked;
  try{
-  const result=await openInInkscape({svg:sample,name:'../portrait',penWidthMm:.3},root,{executable:'test-inkscape',launch:(exe,args,options)=>{
+  const result=await openInInkscape({svg:sample,name:'../portrait',penWidthMm:.3,context:{generationId:'fixture-generation',style:'sparse-five',drawingId:'gemini-no-retrace',routePreference:'overdraw'}},root,{executable:'test-inkscape',launch:(exe,args,options)=>{
    invoked={exe,args,options};const child=new EventEmitter();child.unref=()=>{};
    queueMicrotask(()=>{child.emit('spawn');child.emit('exit',0);});return child;
   }});
   assert.equal(invoked.exe,'test-inkscape');assert.deepEqual(invoked.args,['--with-gui',result.file]);assert.equal(invoked.options.shell,false);
   assert.equal(path.dirname(result.file),path.join(root,'.private','inkscape'));
   assert.match(await readFile(result.file,'utf8'),/width="5in" height="7in"/);
+  const metadata=JSON.parse(await readFile(result.metadataFile,'utf8'));assert.equal(metadata.status,'inkscape_opened');assert.equal(metadata.context.generationId,'fixture-generation');
+  const events=(await readFile(path.join(root,'.private','telemetry','events.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(e=>e.event),['inkscape_open_requested','inkscape_opened']);assert.equal(events[1].file,result.file);assert.equal(events[1].context.routePreference,'overdraw');
+ }finally{assert.ok(root.startsWith(path.join(tmpdir(),'plotter-inkscape-')));await rm(root,{recursive:true,force:true});}
+});
+test('failed launch retains SVG and writes a failed activity outcome',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'plotter-inkscape-'));
+ try{
+  await assert.rejects(openInInkscape({svg:sample},root,{executable:'missing',launch:()=>{const child=new EventEmitter();queueMicrotask(()=>child.emit('error',new Error('missing executable')));return child;}}),/Saved SVG:/);
+  const events=(await readFile(path.join(root,'.private','telemetry','events.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(e=>e.event),['inkscape_open_requested','inkscape_open_failed']);assert.match(await readFile(events[1].file,'utf8'),/<svg/);
  }finally{assert.ok(root.startsWith(path.join(tmpdir(),'plotter-inkscape-')));await rm(root,{recursive:true,force:true});}
 });

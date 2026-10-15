@@ -133,6 +133,9 @@ def line_studies(data,emit):
     # Smooth each branch once, before routing, so forward and backward passes
     # use identical geometry. Keep short junction links until component filtering.
     route_branches=finish(branches,.35+smooth,True,min_length=0,pin_closed=True)
+    no_retrace=route_ink(route_branches,paper/width,None,minimum)
+    no_retrace.update(id='gemini-no-retrace',name='Minimum overwrite: existing ink',
+        description='Covers each retained ink branch exactly once, using the minimum number of trails without router retracing. Keeps short junction links and all retained regions; allows pen lifts wherever needed.')
     routed=route_ink(route_branches,paper/width,stroke_target,minimum)
     ordered=optimize_paths(routed['paths'],paper/width,None,0)
     routed.update(paths=ordered['paths'],optimization=ordered['optimization'],
@@ -165,7 +168,7 @@ def line_studies(data,emit):
     emit(progress='Using vpype to compare travel sorting, gap merging and short-mark cleanup')
     optimized=optimization_studies(flowing,paper/width,merge_gap,simplify)
     emit(progress='Finishing every SVG with vpype: sort, reloop, 1 mm merge, simplify and final sort')
-    results=[routed,minimum_route,repaired_route]+[dict(id=id,name=name,description=desc,paths=paths) for id,name,paths,desc in descriptions]+optimized
+    results=[routed,minimum_route,repaired_route,no_retrace]+[dict(id=id,name=name,description=desc,paths=paths) for id,name,paths,desc in descriptions]+optimized
     for result in results:
         result['description']='Base trace: '+result['description']+' Final vpype cleanup may join endpoints within 1 mm and simplifies within 0.05 mm.'
     return [finish_for_plotter(result,paper/width) for result in results]

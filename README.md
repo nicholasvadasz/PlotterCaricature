@@ -1,6 +1,6 @@
 ﻿# Plotter Caricature
 
-A local web app for capturing or uploading a portrait, generating sparse Gemini line-art variations, and tracing the PNGs into plotter-friendly SVGs. It also includes local tracing and older experiments; the current production workflow is the Gemini treatment set.
+A local web app for capturing or uploading a portrait, generating sparse line-art variations with Gemini or MAI-Image-2.6, and tracing the PNGs into plotter-friendly SVGs. The same portrait treatments work with either provider.
 
 ## Run
 
@@ -14,6 +14,8 @@ npm start
 Open http://127.0.0.1:5195 and keep the terminal open. `Ctrl+C` stops the server. Use the webcam or upload an image, choose a Gemini treatment, and generate. Gemini requests need internet access, a valid API key and quota. The app keeps the API key server-side in `.env.local`.
 
 `Prod Pen Treatment` runs its six prompts independently. `Prod Swatch Experiment` requests one combined swatch and extracts the panels. Generated SVGs receive the local vpype optimization pipeline before download. See [GEMINI-LAB.md](GEMINI-LAB.md) for workflow details.
+
+For the alternate Microsoft provider, follow [MAI-Image-2.6 setup](MAI-IMAGE.md). For timestamped Inkscape history and the improved Balanced / Min overwrite choices, see [Local activity and route choices](TELEMETRY-AND-ROUTES.md).
 
 ## Move to another Windows laptop
 
